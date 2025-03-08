@@ -20,15 +20,21 @@ dns.lookup(os.hostname(), options, (err, addr) => {
   }
 });
 
-function getConnection() {
-    return mysql.createConnection({
-        host: process.env.DB_HOST,  // External Host
-        user: process.env.DB_USER,         // Nome de usuário
-        password: process.env.DB_PASS, // Senha do usuário
-        database: process.env.DB_BASE,    // Nome do banco de dados
-        port: process.env.DB_PORT             // Porta do MySQL
-    });
+const pool = mysql.createPool({
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASS,
+    database: process.env.DB_BASE,
+    port: process.env.DB_PORT,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
+});
+
+async function getConnection() {
+    return await pool.getConnection(); // Agora pega uma conexão do pool
 }
+
 
 
 
@@ -135,7 +141,7 @@ app.post('/process-payment', async (req, res) => {
 app.post('/generate-pix', async (req, res) => {
     try {
         
-        const [cpf, emailPix, valor, mac, duration] = req.body;
+        const { cpf, emailPix, valor, mac, duration } = req.body;
         const idempotencyKey = uuidv4();
 
         const paymentData = {
@@ -194,23 +200,17 @@ app.post('/generate-pix', async (req, res) => {
 
 async function getMacByTransactionId(transactionId) {
     try {
-        const connection = await getConnection(); // Função para conectar ao banco de dados
-        const query = `SELECT mac_address FROM transacoes WHERE transaction_id = ?`;
-        
-        const [rows] = await connection.execute(query, [transactionId]);
+        const connection = await pool.getConnection();
+        const [rows] = await connection.query(`SELECT mac_address FROM transacoes WHERE transaction_id = ?`, [transactionId]);
+        connection.release(); // Libera a conexão para o pool
 
-        await connection.end();
-
-        if (rows.length > 0) {
-            return rows[0].mac_address;
-        } else {
-            return null; // Nenhum resultado encontrado
-        }
+        return rows.length > 0 ? rows[0].mac_address : null;
     } catch (error) {
         console.error("Erro ao buscar MAC:", error);
         return null;
     }
 }
+
 
 // Middleware para processar JSON
 app.use(bodyParser.json());
@@ -218,95 +218,77 @@ app.use(bodyParser.json());
 // Endpoint para receber notificações do Mercado Pago
 app.post('/payment-notification', async (req, res) => {
     try {
-        console.log("Endpoint acessado pelo Mercado Pago!");
+        console.log("🔔 Notificação do Mercado Pago recebida!");
 
         // Verifica se o conteúdo enviado é JSON
         if (!req.is('application/json')) {
             return res.status(400).json({ success: false, message: "Conteúdo inválido" });
         }
 
-        const data = req.body; // Obtém os dados do payload
-        console.log("JSON recebido:", data);
+        const { action, type, data } = req.body;
+        const paymentId = data?.id;
 
-        // Verifica se os dados foram enviados corretamente
-        if (!data) {
-            console.log("Nenhum dado recebido na notificação.");
-            return res.status(400).json({ success: false, message: "Nenhum dado enviado" });
-        }
-
-        // Extração de informações da notificação
-        const action = data.action; // Ação realizada (ex: payment.updated)
-        const notificationType = data.type; // Tipo da notificação (ex: payment)
-        const paymentId = data.data?.id; // ID do pagamento
-
-        // Logs para depuração
-        console.log(`Ação: ${action}, Tipo: ${notificationType}, ID do pagamento: ${paymentId}`);
-
-        // Validação dos dados extraídos
-        if (!action || !notificationType || !paymentId) {
-            console.log("Dados incompletos recebidos.");
+        // Validação básica dos dados recebidos
+        if (!action || !type || !paymentId) {
+            console.log(" Dados incompletos recebidos na notificação.");
             return res.status(400).json({ success: false, message: "Dados incompletos" });
         }
 
-        // Processamento da notificação
-        if (notificationType === "payment") {
-            console.log(`Pagamento atualizado! ID: ${paymentId}`);
-            const connection = getConnection();
-            const query = `
-                UPDATE transacoes
-                SET status_pagamento = ?
-                WHERE id_pagamento = ?
-            `;
+        console.log(`🔹 Ação: ${action}, Tipo: ${type}, ID do pagamento: ${paymentId}`);
 
-            connection.execute(query, [statusPagamento, idPagamento]);
+        // Processamento apenas para notificações de pagamento
+        if (type === "payment") {
+            console.log(` Buscando status do pagamento no Mercado Pago: ${paymentId}`);
 
-            console.log(`Transação ${idPagamento} atualizada com sucesso no banco!`);
-
-                    
-            connection.end();
-            try {
-                const response = await fetch(`https://api.mercadopago.com/v1/payments/${idPagamento}`, {
-                    method: "GET",
-                    headers: {
-                        "Authorization": `Bearer ${accessToken}`,
-                        "Content-Type": "application/json"
-                    }
-                });
-        
-                const data = await response.json();
-        
-                if (data.status === "approved") {
-                    console.log(`Pagamento ${idPagamento} aprovado!`);
-                    const mac = getMacByTransactionId(paymentId)
-                    addMacToBinding(mac, duration)
-
-                } else {
-                    console.log(`Status do pagamento ${idPagamento}: ${data.status}`);
+            // Busca o status do pagamento na API do Mercado Pago
+            const response = await axios.get(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+                headers: {
+                    "Authorization": `Bearer ${process.env.MP_ACCESS_TOKEN}`
                 }
-        
-                res.sendStatus(200);
-            } catch (error) {
-                console.error("Erro ao verificar pagamento:", error);
-                res.sendStatus(500);
+            });
+
+            const paymentData = response.data;
+            const statusPagamento = paymentData.status;
+
+            console.log(` Status do pagamento ${paymentId}: ${statusPagamento}`);
+
+            // Atualiza o status da transação no banco de dados
+            const connection = await pool.getConnection();
+            await connection.query(
+                `UPDATE transacoes SET status_pagamento = ? WHERE transaction_id = ?`,
+                [statusPagamento, paymentId]
+            );
+            connection.release();
+
+            console.log(` Transação ${paymentId} atualizada no banco de dados.`);
+
+            // Se o pagamento foi aprovado, libera o MAC
+            if (statusPagamento === "approved") {
+                console.log(`🎉 Pagamento aprovado! Buscando MAC Address...`);
+
+                const mac = await getMacByTransactionId(paymentId);
+                const duration = 3600; // Duração padrão (1 hora)
+
+                if (mac) {
+                    await addMacToBinding(mac, duration);
+                    console.log(` MAC ${mac} liberado no MikroTik por ${duration} segundos.`);
+                } else {
+                    console.log(` Nenhum MAC encontrado para a transação ${paymentId}.`);
+                }
             }
-
-
-
-
-
-
-            // Aqui você pode adicionar lógica para processar o pagamento
         } else {
-            console.log(`Notificação não tratada. Tipo: ${notificationType}, Ação: ${action}`);
+            console.log(` Notificação ignorada. Tipo: ${type}, Ação: ${action}`);
         }
 
-        // Responde ao Mercado Pago que a notificação foi processada
+        // Responde ao Mercado Pago que a notificação foi processada com sucesso
         res.status(200).json({ success: true, message: "Notificação processada com sucesso" });
+
     } catch (error) {
-        console.error("Erro ao processar notificação:", error);
+        console.error(" Erro ao processar notificação:", error);
         res.status(500).json({ success: false, message: "Erro ao processar notificação" });
     }
 });
+
 
 
 
