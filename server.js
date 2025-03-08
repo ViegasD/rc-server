@@ -6,7 +6,7 @@ const { v4: uuidv4 } = require('uuid'); // Para gerar UUIDs
 const os = require('os');
 const app = express();
 const PORT = 3200;
-const mysql = require('mysql2');
+const mysql = require('mysql2/promise');
 const bodyParser = require('body-parser');
 const dns = require('node:dns');
 
@@ -28,8 +28,20 @@ const pool = mysql.createPool({
     port: process.env.DB_PORT,
     waitForConnections: true,
     connectionLimit: 10,
-    queueLimit: 0
 });
+
+async function executeQuery(query, values) {
+    const connection = await pool.getConnection();
+    try {
+        const [rows] = await connection.execute(query, values);
+        return rows;
+    } catch (error) {
+        console.error("Erro na query MySQL:", error);
+        throw error;
+    } finally {
+        connection.release();
+    }
+}
 
 async function getConnection() {
     return await pool.getConnection(); // Agora pega uma conexão do pool
@@ -201,8 +213,8 @@ app.post('/generate-pix', async (req, res) => {
 async function getMacByTransactionId(transactionId) {
     try {
         const connection = await pool.getConnection();
-        const [rows] = await connection.query(`SELECT mac_address FROM transacoes WHERE transaction_id = ?`, [transactionId]);
-        connection.release(); // Libera a conexão para o pool
+        const [rows] = await pool.getConnection(`SELECT mac_address FROM transacoes WHERE transaction_id = ?`, [transactionId]);
+        connection.end(); // Libera a conexão para o pool
 
         return rows.length > 0 ? rows[0].mac_address : null;
     } catch (error) {
@@ -214,7 +226,7 @@ async function getMacByTransactionId(transactionId) {
 
 // Middleware para processar JSON
 app.use(bodyParser.json());
-
+pool.getConnection
 // Endpoint para receber notificações do Mercado Pago
 app.post('/payment-notification', async (req, res) => {
     try {
@@ -254,11 +266,11 @@ app.post('/payment-notification', async (req, res) => {
 
             // Atualiza o status da transação no banco de dados
             const connection = await pool.getConnection();
-            await connection.query(
+            await (
                 `UPDATE transacoes SET status_pagamento = ? WHERE transaction_id = ?`,
                 [statusPagamento, paymentId]
             );
-            connection.release();
+            connection.end();
 
             console.log(` Transação ${paymentId} atualizada no banco de dados.`);
 
@@ -365,108 +377,68 @@ async function addMacToBinding(mac, duration) {
 
 
 
-function insertTransaction(cpf, email, amount, mac, transaction_id, time, status, duration) {
-    // 1️⃣ Verifica se o usuário já existe pelo CPF
-    const checkUserQuery = 'SELECT id FROM users WHERE cpf = ?';
-    const connection = getConnection();
-    connection.query(checkUserQuery, [cpf], (err, results) => {
-        if (err) {
-            console.error(' Erro ao verificar usuário:', err);
-            return;
-        }
+async function insertTransaction(cpf, email, amount, mac, transaction_id, time, status, duration) {
+    try {
+        // Verifica se o usuário já existe pelo CPF
+        const userResults = await executeQuery('SELECT id FROM users WHERE cpf = ?', [cpf]);
+        let userId;
 
-        if (results.length === 0) {
-            // 2️⃣ Usuário não existe, então cria um novo usuário
-            console.log('🆕 Usuário não encontrado. Criando novo usuário...');
-            const insertUserQuery = 'INSERT INTO users (cpf) VALUES (?)';
+        if (userResults.length === 0) {
+            // Usuário não existe, cria um novo
+            const insertUserResult = await executeQuery('INSERT INTO users (cpf) VALUES (?)', [cpf]);
+            userId = insertUserResult.insertId;
+            console.log(`Usuário criado com ID: ${userId}`);
 
-            connection.query(insertUserQuery, [cpf], (err, result) => {
-                if (err) {
-                    console.error(' Erro ao inserir usuário:', err);
-                    return;
-                }
-
-                const userId = result.insertId;
-                console.log(` Usuário criado com ID: ${userId}`);
-
-                // 3️⃣ Se o e-mail foi fornecido, adiciona à tabela emails
-                if (email) {
-                    insertEmail(userId, email);
-                }
-
-                // 4️⃣ Agora que o usuário foi criado, insere a transação
-                insertTransactionRow(userId, amount, mac, transaction_id, time);
-            });
-        } else {
-            // 5️⃣ Usuário já existe, obtém o ID dele
-            const userId = results[0].id;
-            console.log(` Usuário encontrado com ID: ${userId}`);
-
-            // 6️⃣ Se o e-mail foi fornecido, adiciona à tabela emails
+            // Adiciona o e-mail se fornecido
             if (email) {
-                insertEmail(userId, email);
+                await insertEmail(userId, email);
             }
+        } else {
+            userId = userResults[0].id;
+            console.log(`Usuário encontrado com ID: ${userId}`);
 
-            // 7️⃣ Insere a transação associada ao usuário existente
-            insertTransactionRow(userId, amount, mac, transaction_id, time, status, duration);
+            // Adiciona o e-mail se fornecido
+            if (email) {
+                await insertEmail(userId, email);
+            }
         }
-    });
-    connection.end();
+
+        // Insere a transação
+        await executeQuery(
+            'INSERT INTO transactions (user_id, amount, mac, transaction_id, time, status, duration) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [userId, amount, mac, transaction_id, time, status, duration]
+        );
+
+        console.log(`Transação inserida com sucesso para o usuário ID: ${userId}`);
+    } catch (error) {
+        console.error('Erro ao inserir transação:', error);
+    }
 }
 
 
-
-// Função auxiliar para inserir uma transação
-function insertTransactionRow(userId, amount, mac, transaction_id, time, status, duration) {
-    
-    const insertTransactionQuery = `
-        INSERT INTO transactions (user_id, amount, mac, transaction_id, time, status, duration)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`;
-    const connection = getConnection();
-    connection.query(insertTransactionQuery, [userId, amount, mac, transaction_id, time, status, duration], (err, result) => {
-        if (err) {
-            console.error(' Erro ao inserir transação:', err);
-            return;
-        }
-        console.log(` Transação inserida com sucesso! ID: ${result.insertId}`);
-    });
-    connection.end();
-}
 
 // Função auxiliar para inserir o e-mail do usuário
-function insertEmail(userId, email) {
-    const query = 'SELECT 1 FROM emails WHERE user_id = ? AND email = ? LIMIT 1';
-    const connection = getConnection();
-    connection.query(query, [userId, email], (err, results) => {
-        if (err) {
-            console.error('Erro ao verificar e-mail:', err);
-            callback(err, null);
-            return;
-        }
+async function insertEmail(userId, email) {
+    try {
+        const emailExists = await executeQuery(
+            'SELECT 1 FROM emails WHERE user_id = ? AND email = ? LIMIT 1',
+            [userId, email]
+        );
 
-        const exists = results.length > 0; // Se houver resultados, o e-mail já existe
-        
-        if (exists) {
+        if (emailExists.length > 0) {
             console.log(`O e-mail ${email} já está cadastrado para o usuário ID ${userId}.`);
         } else {
-            console.log(`O e-mail ${email} **NÃO** está cadastrado para o usuário ID ${userId}.`);
-            const insertEmailQuery = 'INSERT INTO emails (user_id, email) VALUES (?, ?)';
-            
-            connection.query(insertEmailQuery, [userId, email], (err, result) => {
-                if (err) {
-                    console.error(' Erro ao inserir e-mail:', err);
-                    return;
-                }
-                console.log(` E-mail ${email} inserido para o usuário ID: ${userId}`);
-            });
-            connection.end();
+            await executeQuery(
+                'INSERT INTO emails (user_id, email) VALUES (?, ?)',
+                [userId, email]
+            );
+            console.log(`E-mail ${email} inserido para o usuário ID: ${userId}`);
         }
 
-        
-    });
-
+    } catch (error) {
+        console.error('Erro ao inserir/verificar e-mail:', error);
+    }
 }
-
 
 // Inicia o servidor
 app.listen(PORT, () => {
