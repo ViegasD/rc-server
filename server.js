@@ -315,7 +315,7 @@ app.post('/payment-notification', async (req, res) => {
 
 
 // Endpoint para adicionar o MAC ao IP Binding
-async function addMacToBinding(mac, duration) {
+async function addMacToBinding(mac, duration, res) {
     
     
     // Validação dos campos
