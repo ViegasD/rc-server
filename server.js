@@ -48,10 +48,6 @@ async function executeQuery(query, values) {
     }
 }
 
-async function getConnection() {
-    return await pool.getConnection(); // Agora pega uma conexão do pool
-}
-
 
 
 
@@ -218,15 +214,23 @@ app.post('/generate-pix', async (req, res) => {
 async function getMacByTransactionId(transactionId) {
     try {
         const connection = await pool.getConnection();
-        const [rows] = await pool.getConnection(`SELECT mac_address FROM transacoes WHERE transaction_id = ?`, [transactionId]);
-        connection.end(); // Libera a conexão para o pool
+        const [rows] = await connection.execute(
+            `SELECT mac_address FROM transacoes WHERE transaction_id = ?`, 
+            [transactionId]
+        );
+        connection.release(); // Libera a conexão corretamente
 
-        return rows.length > 0 ? rows[0].mac_address : null;
+        if (rows.length > 0) {
+            return rows[0].mac_address;
+        } else {
+            return null; // Retorna null caso não encontre um MAC associado à transação
+        }
     } catch (error) {
         console.error("Erro ao buscar MAC:", error);
         return null;
     }
 }
+
 
 
 // Middleware para processar JSON
@@ -275,7 +279,7 @@ app.post('/payment-notification', async (req, res) => {
                 `UPDATE transacoes SET status_pagamento = ? WHERE transaction_id = ?`,
                 [statusPagamento, paymentId]
             );
-            connection.end();
+            connection.release();
 
             console.log(` Transação ${paymentId} atualizada no banco de dados.`);
 
