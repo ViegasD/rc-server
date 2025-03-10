@@ -1,6 +1,5 @@
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid'); // Para gerar UUIDs
 const os = require('os');
@@ -9,6 +8,12 @@ const PORT = 3200;
 const mysql = require('mysql2/promise');
 const bodyParser = require('body-parser');
 const dns = require('node:dns');
+const cors = require('cors');
+app.use(cors({
+    origin: '*', // Permite qualquer origem (Ajuste para maior segurança se necessário)
+    methods: ['GET', 'POST'], // Métodos permitidos
+    allowedHeaders: ['Content-Type', 'Authorization'], // Cabeçalhos permitidos
+}));
 
 const options = { family: 4 };
 
