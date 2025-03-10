@@ -215,7 +215,7 @@ async function getMacByTransactionId(transactionId) {
     try {
         const connection = await pool.getConnection();
         const [rows] = await connection.execute(
-            `SELECT mac_address FROM transacoes WHERE transaction_id = ?`, 
+            `SELECT mac FROM transactions WHERE transaction_id = ?`, 
             [transactionId]
         );
         connection.release(); // Libera a conexão corretamente
@@ -276,7 +276,7 @@ app.post('/payment-notification', async (req, res) => {
             // Atualiza o status da transação no banco de dados
             const connection = await pool.getConnection();
             await (
-                `UPDATE transacoes SET status = ? WHERE transaction_id = ?`,
+                `UPDATE transactions SET status = ? WHERE transaction_id = ?`,
                 [statusPagamento, paymentId]
             );
             connection.release();
