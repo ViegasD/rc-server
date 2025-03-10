@@ -276,7 +276,7 @@ app.post('/payment-notification', async (req, res) => {
             // Atualiza o status da transação no banco de dados
             const connection = await pool.getConnection();
             await (
-                `UPDATE transacoes SET status_pagamento = ? WHERE transaction_id = ?`,
+                `UPDATE transacoes SET status = ? WHERE transaction_id = ?`,
                 [statusPagamento, paymentId]
             );
             connection.release();
