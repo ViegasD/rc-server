@@ -95,7 +95,7 @@ app.post('/process-payment', async (req, res) => {
     try {
         const idempotencyKey = uuidv4();
         console.log('Requisição recebida para pagamento:', req.body);
-        const {token, payment_method_id, email, cpf, mac, duration, amount} = req.body;
+        const {token, payment_method_id, email, cpf, ip, duration, amount} = req.body;
         const data = {
             transaction_amount: amount,
             description: 'Descrição do produto',
@@ -109,7 +109,7 @@ app.post('/process-payment', async (req, res) => {
                     number: cpf
                 }
             },
-            //external_reference: JSON.stringify({ mac: mac, duration: duration }), // Referência externa vinculada ao MAC Address
+            //external_reference: JSON.stringify({ ip: ip, duration: duration }), // Referência externa vinculada ao MAC Address
             
         };
         const response = await axios.post('https://api.mercadopago.com/v1/payments', data, {
@@ -138,7 +138,7 @@ app.post('/process-payment', async (req, res) => {
         const [day, month, year] = date.split('/');
         const brasilTime = `${year}-${month}-${day} ${time}`;
         console.log('Resposta da API do Mercado Pago:', response.data);
-        insertTransaction(cpf, email, amount, mac, transactionId, brasilTime, 'enviado ao MP', duration);
+        insertTransaction(cpf, email, amount, ip, transactionId, brasilTime, 'enviado ao MP', duration);
 
         res.json(response.data);
     } catch (error) {
@@ -155,7 +155,7 @@ app.post('/process-payment', async (req, res) => {
 app.post('/generate-pix', async (req, res) => {
     try {
         
-        const { cpf, emailPix, valor, mac, duration } = req.body;
+        const { cpf, emailPix, valor, ip, duration } = req.body;
         const idempotencyKey = uuidv4();
 
         const paymentData = {
@@ -171,7 +171,7 @@ app.post('/generate-pix', async (req, res) => {
                     number: cpf,
                 },
             },
-            //external_reference: JSON.stringify({ mac: mac, duration: duration }), // Referência externa vinculada ao MAC Address
+            //external_reference: JSON.stringify({ ip: ip, duration: duration }), // Referência externa vinculada ao MAC Address
         };
 
         console.log('Requisição recebida para pagamento Pix:', paymentData);
@@ -203,7 +203,7 @@ app.post('/generate-pix', async (req, res) => {
         const [date, time] = formattedTime.split(' ');
         const [day, month, year] = date.split('/');
         const brasilTime = `${year}-${month}-${day} ${time}`;
-        insertTransaction(cpf, emailPix, valor, mac, transactionId, brasilTime, 'enviado ao MP', duration);
+        insertTransaction(cpf, emailPix, valor, ip, transactionId, brasilTime, 'enviado ao MP', duration);
         // Retorna o QR Code Pix e a Transaction ID
         res.json({ pixCode, transactionId });
     } catch (error) {
@@ -215,12 +215,12 @@ app.post('/generate-pix', async (req, res) => {
 async function getMacByTransactionId(transactionId) {
     try {
         const rows = await executeQuery(
-            `SELECT mac FROM transactions WHERE transaction_id = ?`, 
+            `SELECT ip FROM transactions WHERE transaction_id = ?`, 
             [transactionId]
         );
 
         if (rows.length > 0) {
-            return rows[0].mac; // Corrigido para 'mac' ao invés de 'mac_address'
+            return rows[0].ip; // Corrigido para 'ip' ao invés de 'ip_address'
         } else {
             return null; // Retorna null se não encontrar um MAC
         }
@@ -286,12 +286,12 @@ app.post('/payment-notification', async (req, res) => {
             if (statusPagamento === "approved") {
                 console.log(`🎉 Pagamento aprovado! Buscando MAC Address...`);
 
-                const mac = await getMacByTransactionId(paymentId);
+                const ip = await getMacByTransactionId(paymentId);
                 const duration = 3600; // Duração padrão (1 hora)
 
-                if (mac) {
-                    await addMacToBinding(mac, duration);
-                    console.log(` MAC ${mac} liberado no MikroTik por ${duration} segundos.`);
+                if (ip) {
+                    await addIpToBinding(ip, duration);
+                    console.log(` MAC ${ip} liberado no MikroTik por ${duration} segundos.`);
                 } else {
                     console.log(` Nenhum MAC encontrado para a transação ${paymentId}.`);
                 }
@@ -316,15 +316,10 @@ app.post('/payment-notification', async (req, res) => {
 
 
 // Endpoint para adicionar o MAC ao IP Binding
-
-async function addMacToBinding(mac, duration) {
+async function addIpToBinding(ip) {
     // Validação dos campos
-    if (!mac || typeof mac !== 'string' || mac.trim() === '') {
-        throw new Error("O campo 'mac' é obrigatório e deve ser uma string válida.");
-    }
-
-    if (!duration || typeof duration !== 'number' || duration <= 0) {
-        throw new Error("O campo 'duration' é obrigatório e deve ser um número maior que zero.");
+    if (!ip || typeof ip !== 'string' || ip.trim() === '') {
+        throw new Error("O campo 'ip' é obrigatório e deve ser uma string válida.");
     }
 
     try {
@@ -337,23 +332,19 @@ async function addMacToBinding(mac, duration) {
             throw new Error("Credenciais do Mikrotik não configuradas corretamente.");
         }
 
-        // Convertendo `duration` para um formato aceito pelo Mikrotik (ex: "30m" ou "1h")
-        const durationFormatted = `${duration}s`;
-
         // URL da API REST do Mikrotik
         const url = `http://${mikrotikIP}/rest/ip/hotspot/ip-binding`;
 
-        // Payload correto para o Mikrotik
+        // Payload ajustado exatamente como o que funcionou no cURL
         const data = {
-            "mac-address": mac,
+            "address": ip,
             "type": "bypassed",
-            "timeout": durationFormatted, // Formato correto
-            "comment": "Liberado via API" // Opcional, mas útil para identificar
+            "comment": "Liberado via API"
         };
 
-        // Fazendo a requisição HTTP
+        // Fazendo a requisição HTTP usando o método PUT
         const response = await fetch(url, {
-            method: "POST",
+            method: "PUT", // Método PUT é necessário
             headers: {
                 "Content-Type": "application/json",
                 "Authorization": "Basic " + Buffer.from(`${user}:${pass}`).toString("base64")
@@ -366,20 +357,16 @@ async function addMacToBinding(mac, duration) {
         }
 
         const result = await response.json();
-        console.log("MAC liberado com sucesso:", result);
+        console.log("IP liberado com sucesso:", result);
         return { success: true, data: result };
 
     } catch (error) {
-        console.error("Erro ao adicionar MAC ao IP Binding:", error);
+        console.error("Erro ao adicionar IP ao IP Binding:", error);
         return { success: false, message: error.message };
     }
 }
 
-
-
-
-
-async function insertTransaction(cpf, email, amount, mac, transaction_id, time, status, duration) {
+async function insertTransaction(cpf, email, amount, ip, transaction_id, time, status, duration) {
     try {
         // Verifica se o usuário já existe pelo CPF
         const userResults = await executeQuery('SELECT id FROM users WHERE cpf = ?', [cpf]);
@@ -407,8 +394,8 @@ async function insertTransaction(cpf, email, amount, mac, transaction_id, time, 
 
         // Insere a transação
         await executeQuery(
-            'INSERT INTO transactions (user_id, amount, mac, transaction_id, time, status, duration) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [userId, amount, mac, transaction_id, time, status, duration]
+            'INSERT INTO transactions (user_id, amount, ip, transaction_id, time, status, duration) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [userId, amount, ip, transaction_id, time, status, duration]
         );
 
         console.log(`Transação inserida com sucesso para o usuário ID: ${userId}`);
