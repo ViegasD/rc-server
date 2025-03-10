@@ -1,4 +1,6 @@
 require('dotenv').config();
+const fetch = require("node-fetch");
+
 const express = require('express');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid'); // Para gerar UUIDs
@@ -315,71 +317,65 @@ app.post('/payment-notification', async (req, res) => {
 
 
 // Endpoint para adicionar o MAC ao IP Binding
-async function addMacToBinding(mac, duration, res) {
-    
-    
+
+async function addMacToBinding(mac, duration) {
     // Validação dos campos
     if (!mac || typeof mac !== 'string' || mac.trim() === '') {
-        return res.status(400).json({
-            success: false,
-            message: "O campo 'mac' é obrigatório e deve ser uma string válida."
-        });
+        throw new Error("O campo 'mac' é obrigatório e deve ser uma string válida.");
     }
 
     if (!duration || typeof duration !== 'number' || duration <= 0) {
-        return res.status(400).json({
-            success: false,
-            message: "O campo 'duration' é obrigatório e deve ser um número maior que zero."
-        });
+        throw new Error("O campo 'duration' é obrigatório e deve ser um número maior que zero.");
     }
 
     try {
-        const user = process.env.MTK_USER
-        const pass = process.env.MTK_PASS
-        const mikrotikIP = process.env.MTK_IP
-        // Adiciona o MAC ao IP Binding
+        // Credenciais e IP do Mikrotik via variáveis de ambiente
+        const user = process.env.MTK_USER;
+        const pass = process.env.MTK_PASS;
+        const mikrotikIP = process.env.MTK_IP;
+
+        if (!user || !pass || !mikrotikIP) {
+            throw new Error("Credenciais do Mikrotik não configuradas corretamente.");
+        }
+
+        // Convertendo `duration` para um formato aceito pelo Mikrotik (ex: "30m" ou "1h")
+        const durationFormatted = `${duration}s`;
+
+        // URL da API REST do Mikrotik
         const url = `http://${mikrotikIP}/rest/ip/hotspot/ip-binding`;
-    
+
+        // Payload correto para o Mikrotik
         const data = {
             "mac-address": mac,
             "type": "bypassed",
-            "timeout": duration
-
+            "timeout": durationFormatted, // Formato correto
+            "comment": "Liberado via API" // Opcional, mas útil para identificar
         };
 
-        try {
-            const response = await fetch(url, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": "Basic " + btoa(user + ":" + pass)
-                },
-                body: JSON.stringify(data)
-            });
+        // Fazendo a requisição HTTP
+        const response = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Basic " + Buffer.from(`${user}:${pass}`).toString("base64")
+            },
+            body: JSON.stringify(data)
+        });
 
-            if (!response.ok) {
-                throw new Error(`Erro: ${response.status} - ${response.statusText}`);
-            }
-
-            const result = await response.json();
-            console.log("MAC liberado com sucesso:", result);
-            return result;
-        } catch (error) {
-            console.error("Erro ao liberar MAC:", error);
+        if (!response.ok) {
+            throw new Error(`Erro na API Mikrotik: ${response.status} - ${response.statusText}`);
         }
-    
-        res.json({
-            success: true,
-            message: `MAC ${mac} adicionado ao IP Binding por ${duration} segundos.`
-        });
+
+        const result = await response.json();
+        console.log("MAC liberado com sucesso:", result);
+        return { success: true, data: result };
+
     } catch (error) {
-        console.error('Erro ao adicionar MAC ao IP Binding:', error);
-        res.status(500).json({
-            success: false,
-            message: `Erro ao adicionar MAC ao IP Binding: ${error}`
-        });
+        console.error("Erro ao adicionar MAC ao IP Binding:", error);
+        return { success: false, message: error.message };
     }
-};
+}
+
 
 
 
