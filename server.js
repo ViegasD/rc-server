@@ -213,17 +213,15 @@ app.post('/generate-pix', async (req, res) => {
 
 async function getMacByTransactionId(transactionId) {
     try {
-        const connection = await pool.getConnection();
-        const [rows] = await connection.execute(
+        const rows = await executeQuery(
             `SELECT mac FROM transactions WHERE transaction_id = ?`, 
             [transactionId]
         );
-        connection.release(); // Libera a conexão corretamente
 
         if (rows.length > 0) {
-            return rows[0].mac_address;
+            return rows[0].mac; // Corrigido para 'mac' ao invés de 'mac_address'
         } else {
-            return null; // Retorna null caso não encontre um MAC associado à transação
+            return null; // Retorna null se não encontrar um MAC
         }
     } catch (error) {
         console.error("Erro ao buscar MAC:", error);
@@ -233,9 +231,9 @@ async function getMacByTransactionId(transactionId) {
 
 
 
+
 // Middleware para processar JSON
 app.use(bodyParser.json());
-pool.getConnection
 // Endpoint para receber notificações do Mercado Pago
 app.post('/payment-notification', async (req, res) => {
     try {
@@ -274,12 +272,12 @@ app.post('/payment-notification', async (req, res) => {
             console.log(` Status do pagamento ${paymentId}: ${statusPagamento}`);
 
             // Atualiza o status da transação no banco de dados
-            const connection = await pool.getConnection();
-            await (
+            await executeQuery(
                 `UPDATE transactions SET status = ? WHERE transaction_id = ?`,
                 [statusPagamento, paymentId]
             );
-            connection.release();
+            
+
 
             console.log(` Transação ${paymentId} atualizada no banco de dados.`);
 
