@@ -316,7 +316,7 @@ app.post('/payment-notification', async (req, res) => {
 
 
 // Endpoint para adicionar o MAC ao IP Binding
-async function addIpToBinding(ip, duration = "00:30:00") {
+async function addIpToBinding(ip, duration = "3m") {
     try {
         const user = process.env.MTK_USER;
         const pass = process.env.MTK_PASS;
@@ -327,22 +327,17 @@ async function addIpToBinding(ip, duration = "00:30:00") {
         }
 
         const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
+        const authHeader = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
 
+        // Criar IP Binding
         const bindingPayload = {
             address: ip,
             type: "regular",
             comment: duration
         };
 
-        const scriptPayload = {
-            name: scriptName,
-            source: `:delay ${duration}; /ip hotspot ip-binding remove [find address="${ip}"]; /system script remove [find name="${scriptName}"]`
-        };
-
-        const authHeader = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
-
         const bindingResponse = await fetch(`http://${mikrotikIP}/rest/ip/hotspot/ip-binding`, {
-            method: "PUT",
+            method: "POST", // Alterado para POST
             headers: {
                 "Content-Type": "application/json",
                 "Authorization": authHeader
@@ -351,11 +346,17 @@ async function addIpToBinding(ip, duration = "00:30:00") {
         });
 
         if (!bindingResponse.ok) {
-            throw new Error(`Erro ao adicionar binding: ${bindingResponse.statusText}`);
+            throw new Error(`Erro ao adicionar binding: ${await bindingResponse.text()}`);
         }
 
+        // Criar script no Mikrotik
+        const scriptPayload = {
+            name: scriptName,
+            source: `:delay ${duration}; /ip hotspot ip-binding remove [find address="${ip}"]; /system script remove [find name="${scriptName}"]`
+        };
+
         const scriptResponse = await fetch(`http://${mikrotikIP}/rest/system/script`, {
-            method: "PUT",
+            method: "POST", // Alterado para POST
             headers: {
                 "Content-Type": "application/json",
                 "Authorization": authHeader
@@ -364,22 +365,26 @@ async function addIpToBinding(ip, duration = "00:30:00") {
         });
 
         if (!scriptResponse.ok) {
-            throw new Error(`Erro ao criar script: ${scriptResponse.statusText}`);
+            throw new Error(`Erro ao criar script: ${await scriptResponse.text()}`);
         }
 
         const scriptData = await scriptResponse.json();
+        if (!scriptData || !scriptData[".id"]) {
+            throw new Error("ID do script não foi retornado corretamente.");
+        }
 
+        // Executar o script imediatamente
         const runResponse = await fetch(`http://${mikrotikIP}/rest/system/script/run`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
                 "Authorization": authHeader
             },
-            body: JSON.stringify({ ".id": scriptData.id })
+            body: JSON.stringify({ ".id": scriptData[".id"] }) // Pegando corretamente o ID do script
         });
 
         if (!runResponse.ok) {
-            throw new Error(`Erro ao executar script: ${runResponse.statusText}`);
+            throw new Error(`Erro ao executar script: ${await runResponse.text()}`);
         }
 
         console.log("IP liberado e script de remoção agendado com sucesso.");
@@ -390,6 +395,7 @@ async function addIpToBinding(ip, duration = "00:30:00") {
         return { success: false, error: error.message };
     }
 }
+
 
 async function insertTransaction(cpf, email, amount, ip, transaction_id, time, status, duration) {
     try {
