@@ -11,6 +11,7 @@ const bodyParser = require('body-parser');
 const dns = require('node:dns');
 const cors = require('cors');
 const net = require("net");
+const crypto = require("crypto");
 
 app.use(cors({
     origin: '*', // Permite qualquer origem (Ajuste para maior segurança se necessário)
@@ -319,7 +320,7 @@ app.post('/payment-notification', async (req, res) => {
 
 
 // Função principal
-async function addIpToBinding(ip, duration = "30m") {
+async function addIpToBinding(ip, duration = 1800) { // Tempo em segundos
     try {
         const user = process.env.MTK_USER;
         const pass = process.env.MTK_PASS;
@@ -335,14 +336,25 @@ async function addIpToBinding(ip, duration = "30m") {
         client.connect(port, mikrotikIP, async () => {
             console.log("Conectado ao MikroTik!");
 
-            // Autenticação
-            await sendCommand(client, `/login`, `=name=${user}`, `=password=${pass}`);
+            // Passo 1: Autenticação correta na API binária do MikroTik
+            const loginResponse = await sendCommand(client, `/login`);
+            if (loginResponse[0].startsWith("!done")) {
+                const hashChallenge = Buffer.from(loginResponse[1].split("=")[1], "hex");
+                const hash = crypto.createHash("md5");
+                hash.update(Buffer.concat([Buffer.from([0]), Buffer.from(pass, "utf8"), hashChallenge]));
+                const hashedPassword = hash.digest("hex");
+
+                await sendCommand(client, `/login`, `=name=${user}`, `=response=00${hashedPassword}`);
+                console.log("Autenticação bem-sucedida!");
+            } else {
+                throw new Error("Falha na autenticação!");
+            }
 
             // Nome do script baseado no IP
             const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
 
             // Criar IP Binding
-            await sendCommand(client, `/ip/hotspot/ip-binding/add`, `=address=${ip}`, `=type=regular`, `=comment=${duration}`);
+            await sendCommand(client, `/ip/hotspot/ip-binding/add`, `=address=${ip}`, `=type=regular`);
             console.log(`IP ${ip} adicionado à lista de bindings.`);
 
             // Criar script no MikroTik para remover o IP após o tempo especificado
@@ -377,11 +389,21 @@ async function addIpToBinding(ip, duration = "30m") {
     }
 }
 
-// Função para enviar comandos à API binária do MikroTik
+// Função para enviar comandos à API binária do MikroTik e aguardar resposta
 function sendCommand(client, ...words) {
     return new Promise((resolve) => {
         const message = words.map(encodeWord).join("") + "\x00"; // Adiciona o terminador
-        client.write(message, "binary", resolve);
+        client.write(message, "binary");
+
+        let responseData = "";
+        client.on("data", (data) => {
+            responseData += data.toString("binary");
+
+            if (responseData.includes("\x00")) {
+                const responseLines = responseData.split("\x00").filter(line => line);
+                resolve(responseLines);
+            }
+        });
     });
 }
 
@@ -402,6 +424,7 @@ function encodeWord(word) {
 
     return encodedLength + word;
 }
+
 
 
 
