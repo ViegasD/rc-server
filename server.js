@@ -1,5 +1,6 @@
 require('dotenv').config();
-const { MikroClient } = require('mikro-client');
+const fetch = require("node-fetch");
+
 const express = require('express');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid'); // Para gerar UUIDs
@@ -319,137 +320,99 @@ app.post('/payment-notification', async (req, res) => {
 
 
 
-// Função principal
-// Função principal
-async function addIpToBinding(ip, duration = 1800) { // Tempo em segundos
-    try {
-        const user = process.env.MTK_USER;
-        const pass = process.env.MTK_PASS;
-        const mikrotikIP = process.env.MTK_IP;
-        const port = 8728; // Porta da API binária
+// Função para converter duration (ex: "30m", "10s", "3h") para "HH:MM:SS"
+function convertDurationToHHMMSS(duration) {
+    const match = duration.match(/^(\d+)([smh])$/);
+    if (!match) throw new Error(`Formato de duração inválido: ${duration}`);
 
-        if (!user || !pass || !mikrotikIP) {
-            throw new Error("Variáveis de ambiente não configuradas corretamente.");
+    let time = parseInt(match[1]);
+    let unit = match[2];
+
+    let hours = 0, minutes = 0, seconds = 0;
+    if (unit === "s") seconds = time;
+    else if (unit === "m") minutes = time;
+    else if (unit === "h") hours = time;
+
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+// Função para realizar uma requisição com tentativas automáticas
+async function fetchWithRetry(url, options, maxRetries = 3) {
+    let attempt = 0;
+    while (attempt < maxRetries) {
+        try {
+            const response = await fetch(url, options);
+            if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+            return response;
+        } catch (error) {
+            attempt++;
+            console.error(`❌ Erro na tentativa ${attempt}/${maxRetries}: ${error.message}`);
+            if (attempt === maxRetries) throw error;
+            await new Promise(res => setTimeout(res, 2000)); // Espera 2s antes de tentar novamente
         }
+    }
+}
 
-        const client = new net.Socket();
+async function addIpToBinding(ip, duration = "30m") {
+    try {
+        const user = process.env.MTK_USER || "admin";
+        const pass = process.env.MTK_PASS || "admin";
+        const mikrotikIP = process.env.MTK_IP || "192.168.0.200";
 
-        client.connect(port, mikrotikIP, async () => {
-            console.log("Conectado ao MikroTik!");
+        const authHeader = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
 
-            // Passo 1: Autenticação correta na API binária do MikroTik
-            console.log("Enviando comando de login inicial...");
-            const loginResponse = await sendCommand(client, `/login`);
+        console.log(`Adicionando IP ${ip} à lista de bindings...`);
 
-            if (!loginResponse || !loginResponse[0].startsWith("!done")) {
-                throw new Error("Falha ao receber desafio de autenticação!");
-            }
-
-            console.log("Resposta do login recebida:", loginResponse);
-
-            // Obtendo o hash de desafio
-            const hashData = loginResponse.find(line => line.startsWith("=ret="));
-            if (!hashData) {
-                throw new Error("Hash de autenticação não encontrado na resposta!");
-            }
-
-            const hashChallenge = Buffer.from(hashData.split("=")[2], "hex");
-
-            console.log("Hash de autenticação obtido:", hashChallenge.toString("hex"));
-
-            // Criando o hash de resposta
-            const hash = crypto.createHash("md5");
-            hash.update(Buffer.concat([Buffer.from([0]), Buffer.from(pass, "utf8"), hashChallenge]));
-            const hashedPassword = hash.digest("hex");
-
-            console.log("Hash MD5 gerado:", hashedPassword);
-
-            // Enviando resposta com hash para autenticar
-            const authResponse = await sendCommand(client, `/login`, `=name=${user}`, `=response=00${hashedPassword}`);
-
-            console.log("Resposta da autenticação:", authResponse);
-
-            if (!authResponse[0].startsWith("!done")) {
-                throw new Error("Falha na autenticação! Verifique usuário e senha.");
-            }
-
-            console.log("Autenticação bem-sucedida!");
-
-            // Nome do script baseado no IP
-            const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
-
-            // Criar IP Binding
-            await sendCommand(client, `/ip/hotspot/ip-binding/add`, `=address=${ip}`, `=type=regular`);
-            console.log(`IP ${ip} adicionado à lista de bindings.`);
-
-            // Criar script no MikroTik para remover o IP após o tempo especificado
-            const scriptSource = `
-                :delay ${duration};
-                /ip hotspot ip-binding remove [find address="${ip}"];
-                /system script remove [find name="${scriptName}"];
-            `;
-            await sendCommand(client, `/system/script/add`, `=name=${scriptName}`, `=source=${scriptSource}`);
-            console.log("Script de remoção criado!");
-
-            // Executar o script imediatamente
-            await sendCommand(client, `/system/script/run`, `=name=${scriptName}`);
-            console.log("Script de remoção agendado e iniciado!");
-
-            client.destroy(); // Fecha a conexão
+        // 1️⃣ Criar IP Binding
+        const bindingPayload = { "address": ip, "type": "regular", "comment": `Remover em ${duration}` };
+        await fetchWithRetry(`http://${mikrotikIP}/rest/ip/hotspot/ip-binding`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "Authorization": authHeader },
+            body: JSON.stringify(bindingPayload)
         });
 
-        client.on("error", (err) => {
-            console.error("Erro na conexão:", err);
+        console.log(`✅ IP ${ip} adicionado com sucesso.`);
+
+        // Converter duração para formato HH:MM:SS
+        const durationHHMMSS = convertDurationToHHMMSS(duration);
+
+        // 2️⃣ Criar script no MikroTik para remover o IP após o tempo especificado
+        const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
+        const scriptPayload = {
+            "name": scriptName,
+            "source": `:log info \"Removendo IP ${ip}\"; :local id [/ip hotspot ip-binding find where address=\"${ip}\"]; :if (\$id != \"\") do={ /ip hotspot ip-binding remove \$id; :log info \"IP ${ip} removido com sucesso\"; } else={ :log info \"IP ${ip} não encontrado\"; }; /system script remove [find name=\"${scriptName}\"]`
+        };
+
+        await fetchWithRetry(`http://${mikrotikIP}/rest/system/script`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "Authorization": authHeader },
+            body: JSON.stringify(scriptPayload)
         });
 
-        client.on("close", () => {
-            console.log("Conexão fechada.");
+        console.log(`✅ Script de remoção criado: ${scriptName}`);
+
+        // 3️⃣ Criar Scheduler para rodar o script após o tempo determinado (usando intervalo convertido)
+        const schedulerPayload = {
+            "name": scriptName,
+            "interval": durationHHMMSS,
+            "on-event": `/system script run ${scriptName}; /system scheduler remove [find name=\"${scriptName}\"]`
+        };
+
+        await fetchWithRetry(`http://${mikrotikIP}/rest/system/scheduler`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "Authorization": authHeader },
+            body: JSON.stringify(schedulerPayload)
         });
+
+        console.log(`✅ Scheduler criado para rodar ${scriptName} após ${duration}`);
 
         return { success: true };
 
     } catch (error) {
-        console.error("Erro:", error);
+        console.error("❌ Erro final:", error);
         return { success: false, error: error.message };
     }
 }
-
-// Função para enviar comandos à API binária do MikroTik e aguardar resposta
-function sendCommand(client, ...words) {
-    return new Promise((resolve) => {
-        const message = words.map(encodeWord).join("") + "\x00"; // Adiciona o terminador
-        client.write(message, "binary");
-
-        let responseData = "";
-        client.on("data", (data) => {
-            responseData += data.toString("binary");
-
-            if (responseData.includes("\x00")) {
-                const responseLines = responseData.split("\x00").filter(line => line);
-                resolve(responseLines);
-            }
-        });
-    });
-}
-
-// Função para codificar um comando no formato da API binária do MikroTik
-function encodeWord(word) {
-    const length = word.length;
-    let encodedLength = "";
-
-    if (length < 0x80) {
-        encodedLength = String.fromCharCode(length);
-    } else if (length < 0x4000) {
-        encodedLength = String.fromCharCode((length >> 8) | 0x80, length & 0xFF);
-    } else if (length < 0x200000) {
-        encodedLength = String.fromCharCode((length >> 16) | 0xC0, (length >> 8) & 0xFF, length & 0xFF);
-    } else {
-        throw new Error("Comando muito longo!");
-    }
-
-    return encodedLength + word;
-}
-
 
 
 
