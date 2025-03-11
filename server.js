@@ -330,12 +330,12 @@ async function addIpToBinding(ip = '192.168.50.1', duration = "3m") {
         const client = new MikroClient({ host: mikrotikIP, port, username: user, password, timeout: 5000 });
 
         // Verifica se o IP já está na lista para evitar duplicação
-        const existing = await client.talk(['/ip/hotspot/ip-binding/print', `?address=${ip}`]);
+        //const existing = await client.talk(['/ip/hotspot/ip-binding/print', `?address=${ip}`]);
 
-        if (existing.length > 0) {
-            console.log("IP já está na lista de bindings.");
-            return { success: false, message: "IP já existe na lista." };
-        }
+        //if (existing.length > 0) {
+        //    console.log("IP já está na lista de bindings.");
+        //    return { success: false, message: "IP já existe na lista." };
+        //}
 
         // Adicionar IP Binding
         await client.talk(['/ip/hotspot/ip-binding/add', `=address=${ip}`, '=type=regular', '=comment=Adicionado automaticamente por API']);
