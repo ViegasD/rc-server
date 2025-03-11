@@ -353,7 +353,24 @@ async function fetchWithRetry(url, options, maxRetries = 3) {
     }
 }
 
-async function addIpToBinding(ip, duration = "30m") {
+// Função para realizar uma requisição com tentativas automáticas
+async function fetchWithRetry(url, options, maxRetries = 3) {
+    let attempt = 0;
+    while (attempt < maxRetries) {
+        try {
+            const response = await fetch(url, options);
+            if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+            return response;
+        } catch (error) {
+            attempt++;
+            console.error(`❌ Erro na tentativa ${attempt}/${maxRetries}: ${error.message}`);
+            if (attempt === maxRetries) throw error;
+            await new Promise(res => setTimeout(res, 2000)); // Espera 2s antes de tentar novamente
+        }
+    }
+}
+
+async function addIpBindingWithTimeout(ip, duration = "30m") {
     try {
         const user = process.env.MTK_USER || "admin";
         const pass = process.env.MTK_PASS || "admin";
@@ -373,9 +390,6 @@ async function addIpToBinding(ip, duration = "30m") {
 
         console.log(`✅ IP ${ip} adicionado com sucesso.`);
 
-        // Converter duração para formato HH:MM:SS
-        const durationHHMMSS = convertDurationToHHMMSS(duration);
-
         // 2️⃣ Criar script no MikroTik para remover o IP após o tempo especificado
         const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
         const scriptPayload = {
@@ -391,10 +405,10 @@ async function addIpToBinding(ip, duration = "30m") {
 
         console.log(`✅ Script de remoção criado: ${scriptName}`);
 
-        // 3️⃣ Criar Scheduler para rodar o script após o tempo determinado (usando intervalo convertido)
+        // 3️⃣ Criar Scheduler para rodar o script após o tempo determinado (sem conversão de tempo)
         const schedulerPayload = {
             "name": scriptName,
-            "interval": durationHHMMSS,
+            "interval": duration,  // Mantém o formato aceito pelo MikroTik
             "on-event": `/system script run ${scriptName}; /system scheduler remove [find name=\"${scriptName}\"]`
         };
 
@@ -413,6 +427,7 @@ async function addIpToBinding(ip, duration = "30m") {
         return { success: false, error: error.message };
     }
 }
+
 
 
 
