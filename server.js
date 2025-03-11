@@ -10,6 +10,8 @@ const mysql = require('mysql2/promise');
 const bodyParser = require('body-parser');
 const dns = require('node:dns');
 const cors = require('cors');
+const net = require("net");
+
 app.use(cors({
     origin: '*', // Permite qualquer origem (Ajuste para maior segurança se necessário)
     methods: ['GET', 'POST'], // Métodos permitidos
@@ -315,48 +317,90 @@ app.post('/payment-notification', async (req, res) => {
 
 
 
-// Endpoint para adicionar o MAC ao IP Binding
-async function addIpToBinding(ip = '192.168.50.1', duration = "3m") {
-    try {
-        const user = process.env.MTK_USER || 'admin';
-        const password = process.env.MTK_PASS || 'admin';
-        const mikrotikIP = process.env.MTK_IP || '192.168.50.1';
-        const port = process.env.MTK_PORT || 8728; // Porta padrão
 
-        if (!user || !password || !mikrotikIP) {
+// Função principal
+async function addIpToBinding(ip, duration = "30m") {
+    try {
+        const user = process.env.MTK_USER;
+        const pass = process.env.MTK_PASS;
+        const mikrotikIP = process.env.MTK_IP;
+        const port = 8728; // Porta da API binária
+
+        if (!user || !pass || !mikrotikIP) {
             throw new Error("Variáveis de ambiente não configuradas corretamente.");
         }
 
-        const client = new MikroClient({ host: mikrotikIP, port, username: user, password, timeout: 5000 });
+        const client = new net.Socket();
 
-        // Verifica se o IP já está na lista para evitar duplicação
-        //const existing = await client.talk(['/ip/hotspot/ip-binding/print', `?address=${ip}`]);
+        client.connect(port, mikrotikIP, async () => {
+            console.log("Conectado ao MikroTik!");
 
-        //if (existing.length > 0) {
-        //    console.log("IP já está na lista de bindings.");
-        //    return { success: false, message: "IP já existe na lista." };
-        //}
+            // Autenticação
+            await sendCommand(client, `/login`, `=name=${user}`, `=password=${pass}`);
 
-        // Adicionar IP Binding
-        await client.talk(['/ip/hotspot/ip-binding/add', `=address=${ip}`, '=type=regular', '=comment=Adicionado automaticamente por API']);
+            // Nome do script baseado no IP
+            const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
 
-        console.log(`IP ${ip} adicionado com sucesso ao IP Binding.`);
+            // Criar IP Binding
+            await sendCommand(client, `/ip/hotspot/ip-binding/add`, `=address=${ip}`, `=type=regular`, `=comment=${duration}`);
+            console.log(`IP ${ip} adicionado à lista de bindings.`);
 
-        // Criar e agendar a remoção do IP
-        const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
-        const scriptSource = `:delay ${duration}; /ip/hotspot/ip-binding/remove [find address="${ip}"]; /system/script/remove [find name="${scriptName}"]`;
+            // Criar script no MikroTik para remover o IP após o tempo especificado
+            const scriptSource = `
+                :delay ${duration};
+                /ip hotspot ip-binding remove [find address="${ip}"];
+                /system script remove [find name="${scriptName}"];
+            `;
+            await sendCommand(client, `/system/script/add`, `=name=${scriptName}`, `=source=${scriptSource}`);
+            console.log("Script de remoção criado!");
 
-        await client.talk(['/system/script/add', `=name=${scriptName}`, `=source=${scriptSource}`]);
+            // Executar o script imediatamente
+            await sendCommand(client, `/system/script/run`, `=name=${scriptName}`);
+            console.log("Script de remoção agendado e iniciado!");
 
-        await client.talk(['/system/script/run', `=name=${scriptName}`]);
+            client.destroy(); // Fecha a conexão
+        });
 
-        console.log(`Script de remoção de IP ${ip} agendado para ${duration}.`);
+        client.on("error", (err) => {
+            console.error("Erro na conexão:", err);
+        });
+
+        client.on("close", () => {
+            console.log("Conexão fechada.");
+        });
 
         return { success: true };
+
     } catch (error) {
-        console.error("Erro ao adicionar IP ao binding:", error);
+        console.error("Erro:", error);
         return { success: false, error: error.message };
     }
+}
+
+// Função para enviar comandos à API binária do MikroTik
+function sendCommand(client, ...words) {
+    return new Promise((resolve) => {
+        const message = words.map(encodeWord).join("") + "\x00"; // Adiciona o terminador
+        client.write(message, "binary", resolve);
+    });
+}
+
+// Função para codificar um comando no formato da API binária do MikroTik
+function encodeWord(word) {
+    const length = word.length;
+    let encodedLength = "";
+
+    if (length < 0x80) {
+        encodedLength = String.fromCharCode(length);
+    } else if (length < 0x4000) {
+        encodedLength = String.fromCharCode((length >> 8) | 0x80, length & 0xFF);
+    } else if (length < 0x200000) {
+        encodedLength = String.fromCharCode((length >> 16) | 0xC0, (length >> 8) & 0xFF, length & 0xFF);
+    } else {
+        throw new Error("Comando muito longo!");
+    }
+
+    return encodedLength + word;
 }
 
 
