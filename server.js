@@ -316,7 +316,7 @@ app.post('/payment-notification', async (req, res) => {
 
 
 // Endpoint para adicionar o MAC ao IP Binding
-async function addIpBindingWithTimeout(ip, duration = "3m") {
+async function addIpToBinding(ip, duration = "3m") {
     try {
         const user = process.env.MTK_USER;
         const password = process.env.MTK_PASS;
