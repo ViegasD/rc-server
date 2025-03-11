@@ -321,45 +321,61 @@ async function addIpToBinding(ip, duration = "3m") {
         const user = process.env.MTK_USER;
         const password = process.env.MTK_PASS;
         const mikrotikIP = process.env.MTK_IP;
+        const port = process.env.MTK_PORT || 8728; // Porta padrão
 
         if (!user || !password || !mikrotikIP) {
             throw new Error("Variáveis de ambiente não configuradas corretamente.");
         }
 
-        const conn = new routeros.Connector({
+        const conn = new RouterOSClient({
             host: mikrotikIP,
             user: user,
             password: password,
-            timeout: 5000
+            port: port
         });
 
         await conn.connect();
 
+        // Verifica se o IP já está na lista para evitar duplicação
+        const existing = await conn.write('/ip/hotspot/ip-binding/print', {
+            ".proplist": "address",
+            "?address": ip
+        });
+        
+        if (existing.length > 0) {
+            console.log("IP já está na lista de bindings.");
+            await conn.close();
+            return { success: false, message: "IP já existe na lista." };
+        }
+
         // Adicionar IP Binding
-        await conn.write('/ip/hotspot/ip-binding/add', [
-            '=address=' + ip,
-            '=type=regular',
-            '=comment=' + duration
-        ]);
+        await conn.write('/ip/hotspot/ip-binding/add', {
+            "address": ip,
+            "type": "regular",
+            "comment": "Adicionado automaticamente por API"
+        });
 
+        console.log(`IP ${ip} adicionado com sucesso ao IP Binding.`);
+
+        // Criar e agendar a remoção do IP
         const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
-        const scriptSource = `:delay ${duration}; /ip hotspot ip-binding remove [find address=\"${ip}\"]; /system script remove [find name=\"${scriptName}\"]`;
+        const scriptSource = `:delay ${duration}; /ip/hotspot/ip-binding/remove [find address=\"${ip}\"]; /system/script/remove [find name=\"${scriptName}\"]`;
 
-        // Criar script no Mikrotik
-        await conn.write('/system/script/add', [
-            '=name=' + scriptName,
-            '=source=' + scriptSource
-        ]);
+        await conn.write('/system/script/add', {
+            "name": scriptName,
+            "source": scriptSource
+        });
 
-        // Executar script
-        await conn.write('/system/script/run', [
-            '=.id=' + scriptName
-        ]);
+        await conn.write('/system/script/run', {
+            "name": scriptName
+        });
 
-        console.log("IP liberado e script de remoção agendado com sucesso.");
+        console.log(`Script de remoção de IP ${ip} agendado para ${duration}.`);
+
+        await conn.close();
         return { success: true };
     } catch (error) {
-        console.error("Erro:", error);
+        console.error("Erro ao adicionar IP ao binding:", error);
         return { success: false, error: error.message };
     }
 }
