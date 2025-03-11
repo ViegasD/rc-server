@@ -381,7 +381,7 @@ async function addIpToBinding(ip, duration = "30m") {
         console.log(`Adicionando IP ${ip} à lista de bindings...`);
 
         // 1️⃣ Criar IP Binding
-        const bindingPayload = { "address": ip, "type": "regular", "comment": `Remover em ${duration}` };
+        const bindingPayload = { "address": ip, "type": "bypassed", "comment": `Remover em ${duration}` };
         await fetchWithRetry(`http://${mikrotikIP}/rest/ip/hotspot/ip-binding`, {
             method: "PUT",
             headers: { "Content-Type": "application/json", "Authorization": authHeader },
