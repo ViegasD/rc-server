@@ -316,7 +316,7 @@ app.post('/payment-notification', async (req, res) => {
 
 
 // Endpoint para adicionar o MAC ao IP Binding
-async function addIpToBinding(ip) {
+async function addIpToBinding(ip, duration) {
     // Validação dos campos
     if (!ip || typeof ip !== 'string' || ip.trim() === '') {
         throw new Error("O campo 'ip' é obrigatório e deve ser uma string válida.");
@@ -338,8 +338,9 @@ async function addIpToBinding(ip) {
         // Payload ajustado exatamente como o que funcionou no cURL
         const data = {
             "address": ip,
-            "type": "bypassed",
-            "comment": "Liberado via API"
+            "type": "regular",
+            "comment": "Liberado via API",
+            "timeout": duration
         };
 
         // Fazendo a requisição HTTP usando o método PUT
