@@ -370,7 +370,7 @@ async function fetchWithRetry(url, options, maxRetries = 3) {
     }
 }
 
-async function addIpBindingWithTimeout(ip, duration = "30m") {
+async function addIpToBinding(ip, duration = "30m") {
     try {
         const user = process.env.MTK_USER || "admin";
         const pass = process.env.MTK_PASS || "admin";
