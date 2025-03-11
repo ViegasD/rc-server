@@ -1,5 +1,5 @@
 require('dotenv').config();
-const RouterOSClient = require('node-routeros');
+const { RouterOSClient } = require('node-routeros');
 const express = require('express');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid'); // Para gerar UUIDs
@@ -327,14 +327,13 @@ async function addIpToBinding(ip, duration = "3m") {
             throw new Error("Variáveis de ambiente não configuradas corretamente.");
         }
 
-        const conn = new RouterOSClient({
+        const conn = new RouterOSClient();
+        await conn.connect({
             host: mikrotikIP,
             user: user,
             password: password,
             port: port
         });
-
-        await conn.connect();
 
         // Verifica se o IP já está na lista para evitar duplicação
         const existing = await conn.write('/ip/hotspot/ip-binding/print', {
@@ -379,6 +378,7 @@ async function addIpToBinding(ip, duration = "3m") {
         return { success: false, error: error.message };
     }
 }
+
 
 
 async function insertTransaction(cpf, email, amount, ip, transaction_id, time, status, duration) {
