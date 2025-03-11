@@ -1,5 +1,5 @@
 require('dotenv').config();
-const RouterOSClient = require('node-routeros');
+const { MikroClient } = require('mikro-client');
 const express = require('express');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid'); // Para gerar UUIDs
@@ -327,32 +327,24 @@ async function addIpToBinding(ip, duration = "3m") {
             throw new Error("Variáveis de ambiente não configuradas corretamente.");
         }
 
-        const conn = new RouterOSClient();
-        await conn.connect({
-            host: mikrotikIP,
-            user: user,
-            password: password,
-            port: port
-        });
+        const client = new MikroClient({ host: mikrotikIP, user, password, port });
+        await client.connect();
 
         // Verifica se o IP já está na lista para evitar duplicação
-        const existing = await conn.write('/ip/hotspot/ip-binding/print', {
-            ".proplist": "address",
-            "?address": ip
-        });
-        
+        const existing = await client.command('/ip/hotspot/ip-binding/print')
+            .where('address', ip)
+            .send();
+
         if (existing.length > 0) {
             console.log("IP já está na lista de bindings.");
-            await conn.close();
+            await client.close();
             return { success: false, message: "IP já existe na lista." };
         }
 
         // Adicionar IP Binding
-        await conn.write('/ip/hotspot/ip-binding/add', {
-            "address": ip,
-            "type": "regular",
-            "comment": "Adicionado automaticamente por API"
-        });
+        await client.command('/ip/hotspot/ip-binding/add')
+            .set({ address: ip, type: "regular", comment: "Adicionado automaticamente por API" })
+            .send();
 
         console.log(`IP ${ip} adicionado com sucesso ao IP Binding.`);
 
@@ -360,24 +352,24 @@ async function addIpToBinding(ip, duration = "3m") {
         const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
         const scriptSource = `:delay ${duration}; /ip/hotspot/ip-binding/remove [find address=\"${ip}\"]; /system/script/remove [find name=\"${scriptName}\"]`;
 
-        await conn.write('/system/script/add', {
-            "name": scriptName,
-            "source": scriptSource
-        });
+        await client.command('/system/script/add')
+            .set({ name: scriptName, source: scriptSource })
+            .send();
 
-        await conn.write('/system/script/run', {
-            "name": scriptName
-        });
+        await client.command('/system/script/run')
+            .set({ name: scriptName })
+            .send();
 
         console.log(`Script de remoção de IP ${ip} agendado para ${duration}.`);
 
-        await conn.close();
+        await client.close();
         return { success: true };
     } catch (error) {
         console.error("Erro ao adicionar IP ao binding:", error);
         return { success: false, error: error.message };
     }
 }
+
 
 
 
