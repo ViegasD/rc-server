@@ -294,9 +294,9 @@ app.post('/payment-notification', async (req, res) => {
 
                 if (ip) {
                     await addIpToBinding(ip, duration);
-                    console.log(` MAC ${ip} liberado no MikroTik por ${duration} segundos.`);
+                    console.log(` IP ${ip} liberado no MikroTik por ${duration} segundos.`);
                 } else {
-                    console.log(` Nenhum MAC encontrado para a transação ${paymentId}.`);
+                    console.log(` Nenhum IP encontrado para a transação ${paymentId}.`);
                 }
             }
         } else {
@@ -320,6 +320,7 @@ app.post('/payment-notification', async (req, res) => {
 
 
 // Função principal
+// Função principal
 async function addIpToBinding(ip, duration = 1800) { // Tempo em segundos
     try {
         const user = process.env.MTK_USER;
@@ -337,18 +338,42 @@ async function addIpToBinding(ip, duration = 1800) { // Tempo em segundos
             console.log("Conectado ao MikroTik!");
 
             // Passo 1: Autenticação correta na API binária do MikroTik
+            console.log("Enviando comando de login inicial...");
             const loginResponse = await sendCommand(client, `/login`);
-            if (loginResponse[0].startsWith("!done")) {
-                const hashChallenge = Buffer.from(loginResponse[1].split("=")[1], "hex");
-                const hash = crypto.createHash("md5");
-                hash.update(Buffer.concat([Buffer.from([0]), Buffer.from(pass, "utf8"), hashChallenge]));
-                const hashedPassword = hash.digest("hex");
 
-                await sendCommand(client, `/login`, `=name=${user}`, `=response=00${hashedPassword}`);
-                console.log("Autenticação bem-sucedida!");
-            } else {
-                throw new Error("Falha na autenticação!");
+            if (!loginResponse || !loginResponse[0].startsWith("!done")) {
+                throw new Error("Falha ao receber desafio de autenticação!");
             }
+
+            console.log("Resposta do login recebida:", loginResponse);
+
+            // Obtendo o hash de desafio
+            const hashData = loginResponse.find(line => line.startsWith("=ret="));
+            if (!hashData) {
+                throw new Error("Hash de autenticação não encontrado na resposta!");
+            }
+
+            const hashChallenge = Buffer.from(hashData.split("=")[2], "hex");
+
+            console.log("Hash de autenticação obtido:", hashChallenge.toString("hex"));
+
+            // Criando o hash de resposta
+            const hash = crypto.createHash("md5");
+            hash.update(Buffer.concat([Buffer.from([0]), Buffer.from(pass, "utf8"), hashChallenge]));
+            const hashedPassword = hash.digest("hex");
+
+            console.log("Hash MD5 gerado:", hashedPassword);
+
+            // Enviando resposta com hash para autenticar
+            const authResponse = await sendCommand(client, `/login`, `=name=${user}`, `=response=00${hashedPassword}`);
+
+            console.log("Resposta da autenticação:", authResponse);
+
+            if (!authResponse[0].startsWith("!done")) {
+                throw new Error("Falha na autenticação! Verifique usuário e senha.");
+            }
+
+            console.log("Autenticação bem-sucedida!");
 
             // Nome do script baseado no IP
             const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
@@ -424,6 +449,7 @@ function encodeWord(word) {
 
     return encodedLength + word;
 }
+
 
 
 
