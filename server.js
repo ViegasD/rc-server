@@ -1,5 +1,5 @@
 require('dotenv').config();
-
+const routeros = require('node-routeros');
 const express = require('express');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid'); // Para gerar UUIDs
@@ -316,80 +316,48 @@ app.post('/payment-notification', async (req, res) => {
 
 
 // Endpoint para adicionar o MAC ao IP Binding
-async function addIpToBinding(ip, duration = "3m") {
+async function addIpBindingWithTimeout(ip, duration = "3m") {
     try {
         const user = process.env.MTK_USER;
-        const pass = process.env.MTK_PASS;
+        const password = process.env.MTK_PASS;
         const mikrotikIP = process.env.MTK_IP;
 
-        if (!user || !pass || !mikrotikIP) {
+        if (!user || !password || !mikrotikIP) {
             throw new Error("Variáveis de ambiente não configuradas corretamente.");
         }
 
-        const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
-        const authHeader = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
-
-        // Criar IP Binding
-        const bindingPayload = {
-            address: ip,
-            type: "regular",
-            comment: duration
-        };
-
-        const bindingResponse = await fetch(`http://${mikrotikIP}/rest/ip/hotspot/ip-binding`, {
-            method: "POST", // Alterado para POST
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": authHeader
-            },
-            body: JSON.stringify(bindingPayload)
+        const conn = new routeros.Connector({
+            host: mikrotikIP,
+            user: user,
+            password: password,
+            timeout: 5000
         });
 
-        if (!bindingResponse.ok) {
-            throw new Error(`Erro ao adicionar binding: ${await bindingResponse.text()}`);
-        }
+        await conn.connect();
+
+        // Adicionar IP Binding
+        await conn.write('/ip/hotspot/ip-binding/add', [
+            '=address=' + ip,
+            '=type=regular',
+            '=comment=' + duration
+        ]);
+
+        const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
+        const scriptSource = `:delay ${duration}; /ip hotspot ip-binding remove [find address=\"${ip}\"]; /system script remove [find name=\"${scriptName}\"]`;
 
         // Criar script no Mikrotik
-        const scriptPayload = {
-            name: scriptName,
-            source: `:delay ${duration}; /ip hotspot ip-binding remove [find address="${ip}"]; /system script remove [find name="${scriptName}"]`
-        };
+        await conn.write('/system/script/add', [
+            '=name=' + scriptName,
+            '=source=' + scriptSource
+        ]);
 
-        const scriptResponse = await fetch(`http://${mikrotikIP}/rest/system/script`, {
-            method: "POST", // Alterado para POST
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": authHeader
-            },
-            body: JSON.stringify(scriptPayload)
-        });
-
-        if (!scriptResponse.ok) {
-            throw new Error(`Erro ao criar script: ${await scriptResponse.text()}`);
-        }
-
-        const scriptData = await scriptResponse.json();
-        if (!scriptData || !scriptData[".id"]) {
-            throw new Error("ID do script não foi retornado corretamente.");
-        }
-
-        // Executar o script imediatamente
-        const runResponse = await fetch(`http://${mikrotikIP}/rest/system/script/run`, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": authHeader
-            },
-            body: JSON.stringify({ ".id": scriptData[".id"] }) // Pegando corretamente o ID do script
-        });
-
-        if (!runResponse.ok) {
-            throw new Error(`Erro ao executar script: ${await runResponse.text()}`);
-        }
+        // Executar script
+        await conn.write('/system/script/run', [
+            '=.id=' + scriptName
+        ]);
 
         console.log("IP liberado e script de remoção agendado com sucesso.");
         return { success: true };
-
     } catch (error) {
         console.error("Erro:", error);
         return { success: false, error: error.message };
