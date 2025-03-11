@@ -316,54 +316,78 @@ app.post('/payment-notification', async (req, res) => {
 
 
 // Endpoint para adicionar o MAC ao IP Binding
-async function addIpToBinding(ip, duration) {
-    // Validação dos campos
-    if (!ip || typeof ip !== 'string' || ip.trim() === '') {
-        throw new Error("O campo 'ip' é obrigatório e deve ser uma string válida.");
-    }
-
+async function addIpToBinding(ip, duration = "00:30:00") {
     try {
-        // Credenciais e IP do Mikrotik via variáveis de ambiente
         const user = process.env.MTK_USER;
         const pass = process.env.MTK_PASS;
         const mikrotikIP = process.env.MTK_IP;
 
         if (!user || !pass || !mikrotikIP) {
-            throw new Error("Credenciais do Mikrotik não configuradas corretamente.");
+            throw new Error("Variáveis de ambiente não configuradas corretamente.");
         }
 
-        // URL da API REST do Mikrotik
-        const url = `http://${mikrotikIP}/rest/ip/hotspot/ip-binding`;
+        const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
 
-        // Payload ajustado exatamente como o que funcionou no cURL
-        const data = {
-            "address": ip,
-            "type": "regular",
-            "comment": "Liberado via API",
-            "timeout": duration
+        const bindingPayload = {
+            address: ip,
+            type: "regular",
+            comment: duration
         };
 
-        // Fazendo a requisição HTTP usando o método PUT
-        const response = await fetch(url, {
-            method: "PUT", // Método PUT é necessário
+        const scriptPayload = {
+            name: scriptName,
+            source: `:delay ${duration}; /ip hotspot ip-binding remove [find address="${ip}"]; /system script remove [find name="${scriptName}"]`
+        };
+
+        const authHeader = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
+
+        const bindingResponse = await fetch(`http://${mikrotikIP}/rest/ip/hotspot/ip-binding`, {
+            method: "PUT",
             headers: {
                 "Content-Type": "application/json",
-                "Authorization": "Basic " + Buffer.from(`${user}:${pass}`).toString("base64")
+                "Authorization": authHeader
             },
-            body: JSON.stringify(data)
+            body: JSON.stringify(bindingPayload)
         });
 
-        if (!response.ok) {
-            throw new Error(`Erro na API Mikrotik: ${response.status} - ${response.statusText}`);
+        if (!bindingResponse.ok) {
+            throw new Error(`Erro ao adicionar binding: ${bindingResponse.statusText}`);
         }
 
-        const result = await response.json();
-        console.log("IP liberado com sucesso:", result);
-        return { success: true, data: result };
+        const scriptResponse = await fetch(`http://${mikrotikIP}/rest/system/script`, {
+            method: "PUT",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": authHeader
+            },
+            body: JSON.stringify(scriptPayload)
+        });
+
+        if (!scriptResponse.ok) {
+            throw new Error(`Erro ao criar script: ${scriptResponse.statusText}`);
+        }
+
+        const scriptData = await scriptResponse.json();
+
+        const runResponse = await fetch(`http://${mikrotikIP}/rest/system/script/run`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": authHeader
+            },
+            body: JSON.stringify({ ".id": scriptData.id })
+        });
+
+        if (!runResponse.ok) {
+            throw new Error(`Erro ao executar script: ${runResponse.statusText}`);
+        }
+
+        console.log("IP liberado e script de remoção agendado com sucesso.");
+        return { success: true };
 
     } catch (error) {
-        console.error("Erro ao adicionar IP ao IP Binding:", error);
-        return { success: false, message: error.message };
+        console.error("Erro:", error);
+        return { success: false, error: error.message };
     }
 }
 
