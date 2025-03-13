@@ -240,7 +240,7 @@ app.post('/generate-pix', async (req, res) => {
     }
 });
 
-async function getMacByTransactionId(transactionId) {
+async function getIpByTransactionId(transactionId) {
     try {
         const rows = await executeQuery(
             `SELECT ip FROM transactions WHERE transaction_id = ?`, 
@@ -332,8 +332,8 @@ app.post('/payment-notification', async (req, res) => {
             if (statusPagamento === "approved") {
                 console.log(`🎉 Pagamento aprovado! Buscando MAC Address...`);
 
-                const ip = await getMacByTransactionId(paymentId);
-                const duration = getDurationByTransactionId(paymentId); // Duração padrão (1 hora)
+                const ip = await getIpByTransactionId(paymentId);
+                const duration = await getDurationByTransactionId(paymentId); // Duração padrão (1 hora)
 
                 if (ip) {
                     await addIpToBinding(ip, duration);
