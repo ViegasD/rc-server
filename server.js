@@ -99,7 +99,31 @@ app.post('/process-payment', async (req, res) => {
     try {
         const idempotencyKey = uuidv4();
         console.log('Requisição recebida para pagamento:', req.body);
-        const {token, payment_method_id, email, cpf, ip, duration, amount} = req.body;
+        const {cardNumber, cardExpirationMonth, cardExpirationYear, securityCode, cardholderName, payment_method_id, email, cpf, ip, duration, amount} = req.body;
+        // Criar token do cartão no MercadoPago
+        const tokenResponse = await fetch("https://api.mercadopago.com/v1/card_tokens", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${MERCADOPAGO_ACCESS_TOKEN}`
+            },
+            body: JSON.stringify({
+                card_number: cardNumber,
+                expiration_month: cardExpirationMonth,
+                expiration_year: cardExpirationYear,
+                security_code: securityCode,
+                cardholder: {
+                    name: cardholderName
+                }
+            })
+        });
+        const token = await tokenResponse.json();
+        if (!tokenResponse.ok) {
+            throw new Error(tokenResult.message || "Erro ao gerar token do cartão");
+        }
+
+        console.log("Token do cartão gerado:", tokenResult.id);
+
         const data = {
             transaction_amount: amount,
             description: 'Descrição do produto',
@@ -320,21 +344,7 @@ app.post('/payment-notification', async (req, res) => {
 
 
 
-// Função para converter duration (ex: "30m", "10s", "3h") para "HH:MM:SS"
-function convertDurationToHHMMSS(duration) {
-    const match = duration.match(/^(\d+)([smh])$/);
-    if (!match) throw new Error(`Formato de duração inválido: ${duration}`);
 
-    let time = parseInt(match[1]);
-    let unit = match[2];
-
-    let hours = 0, minutes = 0, seconds = 0;
-    if (unit === "s") seconds = time;
-    else if (unit === "m") minutes = time;
-    else if (unit === "h") hours = time;
-
-    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
 
 // Função para realizar uma requisição com tentativas automáticas
 async function fetchWithRetry(url, options, maxRetries = 3) {
