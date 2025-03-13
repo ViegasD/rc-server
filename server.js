@@ -105,7 +105,7 @@ app.post('/process-payment', async (req, res) => {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                "Authorization": `Bearer ${MERCADOPAGO_ACCESS_TOKEN}`
+                "Authorization": `Bearer ${process.env.MP_PUBLIC_TOKEN}`
             },
             body: JSON.stringify({
                 card_number: cardNumber,
@@ -199,7 +199,7 @@ app.post('/generate-pix', async (req, res) => {
                     number: cpf,
                 },
             },
-            //external_reference: JSON.stringify({ ip: ip, duration: duration }), // Referência externa vinculada ao MAC Address
+            external_reference: JSON.stringify({duration: duration }), // Referência externa vinculada ao MAC Address
         };
 
         console.log('Requisição recebida para pagamento Pix:', paymentData);
@@ -254,6 +254,24 @@ async function getMacByTransactionId(transactionId) {
         }
     } catch (error) {
         console.error("Erro ao buscar MAC:", error);
+        return null;
+    }
+}
+
+async function getDurationByTransactionId(transactionId) {
+    try {
+        const rows = await executeQuery(
+            `SELECT duration FROM transactions WHERE transaction_id = ?`, 
+            [transactionId]
+        );
+
+        if (rows.length > 0) {
+            return rows[0].duration; // Retorna a duração correspondente
+        } else {
+            return null; // Retorna null se não encontrar uma duração
+        }
+    } catch (error) {
+        console.error("Erro ao buscar duração:", error);
         return null;
     }
 }
@@ -315,7 +333,7 @@ app.post('/payment-notification', async (req, res) => {
                 console.log(`🎉 Pagamento aprovado! Buscando MAC Address...`);
 
                 const ip = await getMacByTransactionId(paymentId);
-                const duration = 3600; // Duração padrão (1 hora)
+                const duration = getDurationByTransactionId(transactionId); // Duração padrão (1 hora)
 
                 if (ip) {
                     await addIpToBinding(ip, duration);
@@ -380,7 +398,7 @@ async function fetchWithRetry(url, options, maxRetries = 3) {
     }
 }
 
-async function addIpToBinding(ip, duration = "30m") {
+async function addIpToBinding(ip, duration = "00:30:00") {
     try {
         const user = process.env.MTK_USER || "admin";
         const pass = process.env.MTK_PASS || "admin";
@@ -388,47 +406,33 @@ async function addIpToBinding(ip, duration = "30m") {
 
         const authHeader = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
 
-        console.log(`Adicionando IP ${ip} à lista de bindings...`);
+        console.log(`🔹 Adicionando IP ${ip} à lista de bindings...`);
 
-        // 1️⃣ Criar IP Binding
+        // 🔹 1️⃣ Criar IP Binding com retry
         const bindingPayload = { "address": ip, "type": "bypassed", "comment": `Remover em ${duration}` };
         await fetchWithRetry(`http://${mikrotikIP}/rest/ip/hotspot/ip-binding`, {
             method: "PUT",
             headers: { "Content-Type": "application/json", "Authorization": authHeader },
             body: JSON.stringify(bindingPayload)
-        });
+        }, 3);
 
         console.log(`✅ IP ${ip} adicionado com sucesso.`);
 
-        // 2️⃣ Criar script no MikroTik para remover o IP após o tempo especificado
-        const scriptName = `remover_ip_${ip.replace(/\./g, "_")}`;
-        const scriptPayload = {
-            "name": scriptName,
-            "source": `:log info \"Removendo IP ${ip}\"; :local id [/ip hotspot ip-binding find where address=\"${ip}\"]; :if (\$id != \"\") do={ /ip hotspot ip-binding remove \$id; :log info \"IP ${ip} removido com sucesso\"; } else={ :log info \"IP ${ip} não encontrado\"; }; /system script remove [find name=\"${scriptName}\"]`
-        };
-
-        await fetchWithRetry(`http://${mikrotikIP}/rest/system/script`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json", "Authorization": authHeader },
-            body: JSON.stringify(scriptPayload)
-        });
-
-        console.log(`✅ Script de remoção criado: ${scriptName}`);
-
-        // 3️⃣ Criar Scheduler para rodar o script após o tempo determinado (sem conversão de tempo)
+        // 🔹 2️⃣ Criar Scheduler (sem script separado)
+        const schedulerName = `remover_ip_${ip.replace(/\./g, "_")}`;
         const schedulerPayload = {
-            "name": scriptName,
-            "interval": duration,  // Mantém o formato aceito pelo MikroTik
-            "on-event": `/system script run ${scriptName}; /system scheduler remove [find name=\"${scriptName}\"]`
+            "name": schedulerName,
+            "interval": duration,
+            "on-event": `/log info \"Removendo IP ${ip}\"; :local id [/ip hotspot ip-binding find where address=\"${ip}\"]; :if (\$id != \"\") do={ /ip hotspot ip-binding remove \$id; :log info \"IP ${ip} removido com sucesso\"; } else={ :log info \"IP ${ip} não encontrado\"; }; /system scheduler remove [find name=\"${schedulerName}\"]`
         };
 
         await fetchWithRetry(`http://${mikrotikIP}/rest/system/scheduler`, {
             method: "PUT",
             headers: { "Content-Type": "application/json", "Authorization": authHeader },
             body: JSON.stringify(schedulerPayload)
-        });
+        }, 3);
 
-        console.log(`✅ Scheduler criado para rodar ${scriptName} após ${duration}`);
+        console.log(`✅ Scheduler criado para remover ${ip} após ${duration}`);
 
         return { success: true };
 
@@ -437,6 +441,7 @@ async function addIpToBinding(ip, duration = "30m") {
         return { success: false, error: error.message };
     }
 }
+
 
 
 
