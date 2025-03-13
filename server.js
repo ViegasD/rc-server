@@ -333,7 +333,7 @@ app.post('/payment-notification', async (req, res) => {
                 console.log(`🎉 Pagamento aprovado! Buscando MAC Address...`);
 
                 const ip = await getMacByTransactionId(paymentId);
-                const duration = getDurationByTransactionId(transactionId); // Duração padrão (1 hora)
+                const duration = getDurationByTransactionId(paymentId); // Duração padrão (1 hora)
 
                 if (ip) {
                     await addIpToBinding(ip, duration);
