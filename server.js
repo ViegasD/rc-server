@@ -90,7 +90,22 @@ app.post('/get-payment-methods', async (req, res) => {
     }
 });
 
+async function getCpfByPaymentId(paymentId) {
+    const query = `
+        SELECT u.cpf 
+        FROM transactions t
+        JOIN users u ON t.user_id = u.id
+        WHERE t.transaction_id = ?
+    `;
 
+    const result = await executeQuery(query, [paymentId]);
+
+    if (result.length > 0) {
+        return result[0].cpf;
+    } else {
+        return null;
+    }
+}
 
 
 
@@ -336,7 +351,8 @@ app.post('/payment-notification', async (req, res) => {
                 const duration = await getDurationByTransactionId(paymentId); // Duração padrão (1 hora)
 
                 if (ip) {
-                    await addIpToBinding(ip, duration);
+                    cpf = getCpfByPaymentId(paymentId)
+                    await addIpToBinding(ip, duration, cpf);
                     console.log(` IP ${ip} liberado no MikroTik por ${duration} segundos.`);
                 } else {
                     console.log(` Nenhum IP encontrado para a transação ${paymentId}.`);
@@ -442,21 +458,22 @@ async function addIpToBinding(ip, duration = "00:30:00") {
     }
 }
 */
+
 // função para substituir o ipbinding pelo usuario mac+
-async function addIpToBinding(mac, duration = "00:30:00") {
+async function addIpToBinding(mac, duration = "00:30:00", cpf) {
     try {
         const user = process.env.MTK_USER || "admin";
         const pass = process.env.MTK_PASS || "admin";
         const mikrotikIP = process.env.MTK_IP || "192.168.0.200";
 
         const authHeader = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
-
+        const username = cpf
         console.log(`🔹 Criando usuário Hotspot: ${username} com MAC ${mac}`);
 
         // 🔹 1️⃣ Criar usuário no Hotspot com retry
-        const userPayload = { 
-            "name": mac,
-            "password": mac,
+        const userPayload = {
+            "name": cpf,
+            "password": cpf,
             "mac-address": mac, 
             "profile": "default",
             "comment": `Remover em ${duration}`
