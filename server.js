@@ -92,7 +92,7 @@ app.post('/get-payment-methods', async (req, res) => {
 
 async function getCpfByPaymentId(paymentId) {
     const query = `
-        SELECT u.cpf 
+        SELECT u.cpf
         FROM transactions t
         JOIN users u ON t.user_id = u.id
         WHERE t.transaction_id = ?
@@ -467,7 +467,8 @@ async function addIpToBinding(mac, duration = "00:30:00", cpf) {
         const mikrotikIP = process.env.MTK_IP || "192.168.0.200";
 
         const authHeader = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
-        const username = cpf
+        const username = paymentData.payer?.identification?.number || null;
+        const cpf = username
         console.log(`🔹 Criando usuário Hotspot: ${username} com MAC ${mac}`);
 
         // 🔹 1️⃣ Criar usuário no Hotspot com retry
