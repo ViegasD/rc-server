@@ -397,7 +397,7 @@ async function fetchWithRetry(url, options, maxRetries = 3) {
         }
     }
 }
-
+/*
 async function addIpToBinding(ip, duration = "00:30:00") {
     try {
         const user = process.env.MTK_USER || "admin";
@@ -441,6 +441,59 @@ async function addIpToBinding(ip, duration = "00:30:00") {
         return { success: false, error: error.message };
     }
 }
+*/
+// função para substituir o ipbinding pelo usuario mac+
+async function addIpToBinding(mac, duration = "00:30:00") {
+    try {
+        const user = process.env.MTK_USER || "admin";
+        const pass = process.env.MTK_PASS || "admin";
+        const mikrotikIP = process.env.MTK_IP || "192.168.0.200";
+
+        const authHeader = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
+
+        console.log(`🔹 Criando usuário Hotspot: ${username} com MAC ${mac}`);
+
+        // 🔹 1️⃣ Criar usuário no Hotspot com retry
+        const userPayload = { 
+            "name": mac,
+            "password": mac,
+            "mac-address": mac, 
+            "profile": "default",
+            "comment": `Remover em ${duration}`
+        };
+
+        await fetchWithRetry(`http://${mikrotikIP}/rest/ip/hotspot/user`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "Authorization": authHeader },
+            body: JSON.stringify(userPayload)
+        }, 3);
+
+        console.log(`✅ Usuário ${username} criado com sucesso.`);
+
+        // 🔹 2️⃣ Criar Scheduler para remover usuário após o tempo determinado
+        const schedulerName = `remover_user_${username}`;
+        const schedulerPayload = {
+            "name": schedulerName,
+            "interval": duration,
+            "on-event": `/log info \"Removendo usuário ${username}\"; :local id [/ip hotspot user find where name=\"${username}\"]; :if (\$id != \"\") do={ /ip hotspot user remove \$id; :log info \"Usuário ${username} removido com sucesso\"; } else={ :log info \"Usuário ${username} não encontrado\"; }; /system scheduler remove [find name=\"${schedulerName}\"]`
+        };
+
+        await fetchWithRetry(`http://${mikrotikIP}/rest/system/scheduler`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "Authorization": authHeader },
+            body: JSON.stringify(schedulerPayload)
+        }, 3);
+
+        console.log(`✅ Scheduler criado para remover usuário ${username} após ${duration}`);
+
+        return { success: true };
+
+    } catch (error) {
+        console.error("❌ Erro final:", error);
+        return { success: false, error: error.message };
+    }
+}
+
 
 
 
