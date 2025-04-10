@@ -114,7 +114,7 @@ app.post('/process-payment', async (req, res) => {
     try {
         const idempotencyKey = uuidv4();
         console.log('Requisição recebida para pagamento:', req.body);
-        const {cardNumber, cardExpirationMonth, cardExpirationYear, securityCode, cardholderName, payment_method_id, email, cpf, ip, duration, amount} = req.body;
+        const {cardNumber, cardExpirationMonth, cardExpirationYear, securityCode, cardholderName, payment_method_id, email, cpf, ip, duration, amount, unit} = req.body;
         // Criar token do cartão no MercadoPago
         const tokenResponse = await fetch("https://api.mercadopago.com/v1/card_tokens", {
             method: "POST",
@@ -181,7 +181,7 @@ app.post('/process-payment', async (req, res) => {
         const [day, month, year] = date.split('/');
         const brasilTime = `${year}-${month}-${day} ${time}`;
         console.log('Resposta da API do Mercado Pago:', response.data);
-        insertTransaction(cpf, email, amount, ip, transactionId, brasilTime, 'enviado ao MP', duration);
+        insertTransaction(cpf, email, amount, ip, transactionId, brasilTime, 'enviado ao MP', duration, unit);
 
         res.json(response.data);
     } catch (error) {
@@ -198,7 +198,7 @@ app.post('/process-payment', async (req, res) => {
 app.post('/generate-pix', async (req, res) => {
     try {
         
-        const { cpf, emailPix, valor, ip, duration } = req.body;
+        const { cpf, emailPix, valor, ip, duration, unit } = req.body;
         const idempotencyKey = uuidv4();
 
         const paymentData = {
@@ -246,7 +246,7 @@ app.post('/generate-pix', async (req, res) => {
         const [date, time] = formattedTime.split(' ');
         const [day, month, year] = date.split('/');
         const brasilTime = `${year}-${month}-${day} ${time}`;
-        insertTransaction(cpf, emailPix, valor, ip, transactionId, brasilTime, 'enviado ao MP', duration);
+        insertTransaction(cpf, emailPix, valor, ip, transactionId, brasilTime, 'enviado ao MP', duration, unit);
         // Retorna o QR Code Pix e a Transaction ID
         res.json({ pixCode, transactionId });
     } catch (error) {
@@ -272,6 +272,25 @@ async function getIpByTransactionId(transactionId) {
         return null;
     }
 }
+
+async function getUnitByTransactionId(transactionId) {
+    try {
+        const rows = await executeQuery(
+            `SELECT unit FROM transactions WHERE transaction_id = ?`, 
+            [transactionId]
+        );
+
+        if (rows.length > 0) {
+            return rows[0].unit;
+        } else {
+            return null; // Retorna null se não encontrar um unit
+        }
+    } catch (error) {
+        console.error("Erro ao buscar unit:", error);
+        return null;
+    }
+}
+
 
 async function getDurationByTransactionId(transactionId) {
     try {
@@ -330,7 +349,8 @@ app.post('/payment-notification', async (req, res) => {
 
             const paymentData = response.data;
             const statusPagamento = paymentData.status;
-
+            //const unit = getUnitByTransactionId(paymentId)
+            const unit = 2416
             console.log(` Status do pagamento ${paymentId}: ${statusPagamento}`);
 
             // Atualiza o status da transação no banco de dados
@@ -349,7 +369,6 @@ app.post('/payment-notification', async (req, res) => {
 
                 const ip = await getIpByTransactionId(paymentId);
                 const duration = await getDurationByTransactionId(paymentId); // Duração padrão (1 hora)
-
                 if (ip) {
                     cpf =  paymentData.payer?.identification?.number || null;
                     await addIpToBinding(ip, duration, cpf);
@@ -467,16 +486,19 @@ async function addIpToBinding(mac, duration = "00:30:00", cpf) {
         const mikrotikIP = process.env.MTK_IP || "192.168.0.200";
 
         const authHeader = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
-        const username = cpf
+        const username = cpf;
+        const schedulerName = `remover_user_${username}`;
+        const comment = `Remover em ${duration}`;
+
         console.log(`🔹 Criando usuário Hotspot: ${username} com MAC ${mac}`);
 
-        // 🔹 1️⃣ Criar usuário no Hotspot com retry
+        // 🔹 1️⃣ Criar usuário no Hotspot
         const userPayload = {
-            "name": cpf,
-            "password": cpf,
-            "mac-address": mac, 
-            "profile": "default",
-            "comment": `Remover em ${duration}`
+            name: username,
+            password: cpf,
+            "mac-address": mac,
+            profile: "default",
+            comment
         };
 
         await fetchWithRetry(`http://${mikrotikIP}/rest/ip/hotspot/user`, {
@@ -487,12 +509,30 @@ async function addIpToBinding(mac, duration = "00:30:00", cpf) {
 
         console.log(`✅ Usuário ${username} criado com sucesso.`);
 
-        // 🔹 2️⃣ Criar Scheduler para remover usuário após o tempo determinado
-        const schedulerName = `remover_user_${username}`;
+        // 🔹 2️⃣ Adicionar IP Binding do tipo bypassed
+        const bindingPayload = {
+            "mac-address": mac,
+            type: "bypassed",
+            comment
+        };
+
+        await fetchWithRetry(`http://${mikrotikIP}/rest/ip/hotspot/ip-binding`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "Authorization": authHeader },
+            body: JSON.stringify(bindingPayload)
+        }, 3);
+
+        console.log(`✅ IP Binding para MAC ${mac} criado como bypassed.`);
+
+        // 🔹 3️⃣ Criar Scheduler para remover user + binding
         const schedulerPayload = {
-            "name": schedulerName,
-            "interval": duration,
-            "on-event": `/log info \"Removendo usuário ${username}\"; :local id [/ip hotspot user find where name=\"${username}\"]; :if (\$id != \"\") do={ /ip hotspot user remove \$id; :log info \"Usuário ${username} removido com sucesso\"; } else={ :log info \"Usuário ${username} não encontrado\"; }; /system scheduler remove [find name=\"${schedulerName}\"]`
+            name: schedulerName,
+            interval: duration,
+            "on-event": `
+/log info "Removendo usuário ${username} e IP Binding";
+/ip hotspot user remove [find name="${username}"];
+/ip hotspot ip-binding remove [find mac-address="${mac}"];
+/system scheduler remove [find name="${schedulerName}"];`
         };
 
         await fetchWithRetry(`http://${mikrotikIP}/rest/system/scheduler`, {
@@ -501,7 +541,7 @@ async function addIpToBinding(mac, duration = "00:30:00", cpf) {
             body: JSON.stringify(schedulerPayload)
         }, 3);
 
-        console.log(`✅ Scheduler criado para remover usuário ${username} após ${duration}`);
+        console.log(`✅ Scheduler criado para remover tudo após ${duration}`);
 
         return { success: true };
 
@@ -510,6 +550,7 @@ async function addIpToBinding(mac, duration = "00:30:00", cpf) {
         return { success: false, error: error.message };
     }
 }
+
 
 
 
